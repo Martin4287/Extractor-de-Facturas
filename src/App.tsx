@@ -4,8 +4,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { GoogleGenAI } from '@google/genai';
-import { Upload, FileText, Loader2, LayoutDashboard, Database } from 'lucide-react';
+import { Upload, FileText, Loader2, LayoutDashboard } from 'lucide-react';
+import { auth, db } from './firebase';
+import { collection, addDoc, deleteDoc, doc } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 
 interface Product {
   nombre: string;
@@ -28,35 +30,15 @@ interface Invoice {
   productos: Product[];
 }
 
-function Dashboard() {
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [loading, setLoading] = useState(true);
+interface DashboardProps {
+  invoices: Invoice[];
+  loading: boolean;
+  onDelete: (id: string) => void;
+}
+
+function Dashboard({ invoices, loading, onDelete }: DashboardProps) {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, invoice: Invoice } | null>(null);
-
-  useEffect(() => {
-    fetch(`${process.env.APP_URL}/api/invoices`)
-      .then(res => res.json())
-      .then(data => {
-        setInvoices(data);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error('Error fetching invoices:', err);
-        setLoading(false);
-      });
-  }, []);
-
-  const deleteInvoice = async (id: string) => {
-    await fetch(`${process.env.APP_URL}/api/invoices/${id}`, { method: 'DELETE' });
-    setInvoices(invoices.filter(inv => inv.id !== id));
-    setContextMenu(null);
-  };
-
-  const editInvoice = (invoice: Invoice) => {
-    alert('Edit functionality not yet implemented');
-    setContextMenu(null);
-  };
 
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
@@ -91,8 +73,8 @@ function Dashboard() {
           className="fixed bg-white shadow-xl rounded-lg border border-gray-200 z-50 py-2"
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
-          <button onClick={() => editInvoice(contextMenu.invoice)} className="block w-full text-left px-4 py-2 hover:bg-gray-100">Editar</button>
-          <button onClick={() => deleteInvoice(contextMenu.invoice.id)} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-red-600">Eliminar</button>
+          <button onClick={() => { alert('Edit functionality not yet implemented'); setContextMenu(null); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100">Editar</button>
+          <button onClick={() => { onDelete(contextMenu.invoice.id); setContextMenu(null); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-red-600">Eliminar</button>
         </div>
       )}
 
@@ -146,7 +128,15 @@ function Dashboard() {
 }
 
 export default function App() {
+  const [user, setUser] = useState(auth.currentUser);
   const [view, setView] = useState<'extractor' | 'dashboard'>('extractor');
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
   const [files, setFiles] = useState<File[]>([]);
   const [processedInvoices, setProcessedInvoices] = useState<Invoice[]>([]);
   const [filterProveedor, setFilterProveedor] = useState('');
@@ -196,43 +186,27 @@ export default function App() {
       reader.onloadend = async () => {
         try {
           const base64Data = (reader.result as string).split(',')[1];
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
           
-          const prompt = `
-            Analiza la siguiente imagen o PDF de una factura/ticket y extrae la información clave.
-            Devuelve ÚNICAMENTE un objeto JSON plano. Si un dato no es legible o no existe, usa "N/A".
-            Campos requeridos: fecha (DD/MM/AAAA), proveedor, numero_factura, subtotal (número), iva (número), total (número), total_sin_iva (número), productos (array de objetos: { nombre, cantidad, valor_unitario, total_sin_iva }).
-            
-            IMPORTANTE:
-            - Devuelve los campos numéricos estrictamente como números (sin comillas ni formato de moneda).
-            - Si hay descuentos, trátalos como valores negativos en el campo 'total_sin_iva' del producto correspondiente o como un producto con nombre "Descuento" y valor negativo.
-            - El campo 'total_sin_iva' de la factura debe ser la suma de los 'total_sin_iva' de los productos.
-          `;
-
-          const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: {
-              parts: [
-                { inlineData: { data: base64Data, mimeType: file.type } },
-                { text: prompt },
-              ],
-            },
+          const response = await fetch('/api/process-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base64Data, mimeType: file.type }),
           });
-
-          if (response.text) {
-            const jsonResult = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
-            const parsedData = JSON.parse(jsonResult);
-            
-            const responseSave = await fetch(`${process.env.APP_URL}/api/save-invoice`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(parsedData),
-            });
-            const savedInvoice = await responseSave.json();
-            resolve(savedInvoice);
-          } else {
-            reject(new Error('No se pudo extraer información.'));
+          
+          if (!response.ok) throw new Error('Error al procesar la factura.');
+          
+          const parsedData = await response.json();
+          
+          if (!user) {
+            resolve({ id: Date.now().toString(), ...parsedData, userId: 'anonymous' } as Invoice);
+            return;
           }
+
+          const docRef = await addDoc(collection(db, 'invoices'), {
+            ...parsedData,
+            userId: user.uid
+          });
+          resolve({ id: docRef.id, ...parsedData, userId: user.uid } as Invoice);
         } catch (err) {
           reject(err);
         }
@@ -441,7 +415,14 @@ export default function App() {
           ) : (
             <>
               <h1 className="text-2xl font-bold mb-6">Dashboard Contable</h1>
-              <Dashboard />
+              <Dashboard 
+                invoices={processedInvoices} 
+                loading={loading} 
+                onDelete={async (id) => {
+                  await deleteDoc(doc(db, 'invoices', id));
+                  setProcessedInvoices(prev => prev.filter(inv => inv.id !== id));
+                }}
+              />
             </>
           )}
         </div>

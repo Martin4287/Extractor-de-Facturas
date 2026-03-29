@@ -1,84 +1,54 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import fs from "fs";
 import path from "path";
-import crypto from "crypto";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
 
-  // API route to save invoice data
-  app.post("/api/save-invoice", (req, res) => {
-    console.log("Received POST request to /api/save-invoice");
-    const data = req.body;
-    data.id = crypto.randomUUID(); // Generate unique ID
-    const filePath = path.join(process.cwd(), "data.json");
-    console.log("Saving data to:", filePath);
-    
-    let existingData = [];
-    if (fs.existsSync(filePath)) {
-      const fileContent = fs.readFileSync(filePath, "utf-8");
-      try {
-        existingData = JSON.parse(fileContent);
-      } catch (e) {
-        console.error("Error parsing existing data:", e);
-        existingData = [];
-      }
-    }
-    
-    existingData.push(data);
-    fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2));
-    console.log("Data saved successfully");
-    
-    res.json({ success: true, id: data.id });
-  });
-
-  // API route to get all invoices
-  app.get("/api/invoices", (req, res) => {
-    const filePath = path.join(process.cwd(), "data.json");
-    if (!fs.existsSync(filePath)) {
-      return res.json([]);
-    }
-    const fileContent = fs.readFileSync(filePath, "utf-8");
+  // API routes
+  app.post("/api/process-invoice", async (req, res) => {
     try {
-      res.json(JSON.parse(fileContent));
-    } catch (e) {
-      res.json([]);
-    }
-  });
+      const { base64Data, mimeType } = req.body;
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+      
+      const prompt = `
+        Analiza la siguiente imagen o PDF de una factura/ticket y extrae la información clave.
+        Devuelve ÚNICAMENTE un objeto JSON plano. Si un dato no es legible o no existe, usa "N/A".
+        Campos requeridos: fecha (DD/MM/AAAA), proveedor, numero_factura, subtotal (número), iva (número), total (número), total_sin_iva (número), productos (array de objetos: { nombre, cantidad, valor_unitario, total_sin_iva }).
+        
+        IMPORTANTE:
+        - Devuelve los campos numéricos estrictamente como números (sin comillas ni formato de moneda).
+        - Si hay descuentos, trátalos como valores negativos en el campo 'total_sin_iva' del producto correspondiente o como un producto con nombre "Descuento" y valor negativo.
+        - El campo 'total_sin_iva' de la factura debe ser la suma de los 'total_sin_iva' de los productos.
+      `;
 
-  // API route to delete an invoice
-  app.delete("/api/invoices/:id", (req, res) => {
-    const { id } = req.params;
-    const filePath = path.join(process.cwd(), "data.json");
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: "File not found" });
-    }
-    let existingData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    existingData = existingData.filter((inv: any) => inv.id !== id);
-    fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2));
-    res.json({ success: true });
-  });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: {
+          parts: [
+            { inlineData: { data: base64Data, mimeType: mimeType } },
+            { text: prompt },
+          ],
+        },
+      });
 
-  // API route to update an invoice
-  app.put("/api/invoices/:id", (req, res) => {
-    const { id } = req.params;
-    const updatedData = req.body;
-    const filePath = path.join(process.cwd(), "data.json");
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: "File not found" });
+      if (response.text) {
+        const jsonResult = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+        res.json(JSON.parse(jsonResult));
+      } else {
+        res.status(500).json({ error: 'No se pudo extraer información.' });
+      }
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Error al procesar la factura.' });
     }
-    let existingData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    const index = existingData.findIndex((inv: any) => inv.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: "Invoice not found" });
-    }
-    existingData[index] = { ...existingData[index], ...updatedData, id };
-    fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2));
-    res.json({ success: true });
   });
 
   // Vite middleware for development
@@ -89,7 +59,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
