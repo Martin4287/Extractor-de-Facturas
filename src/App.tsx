@@ -196,7 +196,7 @@ export default function App() {
       reader.onloadend = async () => {
         try {
           const base64Data = (reader.result as string).split(',')[1];
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+          const ai = new GoogleGenAI({ apiKey: window.aistudio.getApiKey() });
           
           const prompt = `
             Analiza la siguiente imagen o PDF de una factura/ticket y extrae la información clave.
