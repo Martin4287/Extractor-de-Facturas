@@ -1,0 +1,5 @@
+{
+  "name": "Invoice Data Extractor",
+  "description": "Expert accounting tool to extract invoice and ticket data into JSON format using AI.",
+  "requestFramePermissions": []
+}
