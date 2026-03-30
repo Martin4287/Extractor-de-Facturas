@@ -85,10 +85,11 @@ async function setupVite() {
 
 setupVite();
 
-// Start server
-const PORT = 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+// Local development
+if (process.env.NODE_ENV !== "production") {
+  app.listen(3000, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:3000`);
+  });
+}
 
 export default app;
