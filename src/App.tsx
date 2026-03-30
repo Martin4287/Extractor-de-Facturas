@@ -189,50 +189,15 @@ export default function App() {
         try {
           const base64Data = (reader.result as string).split(',')[1];
           
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-          const prompt = `
-            Analiza la siguiente imagen o PDF de una factura/ticket y extrae la información clave.
-            Devuelve ÚNICAMENTE un objeto JSON plano. NO incluyas explicaciones, ni texto adicional fuera del JSON.
-            Si un dato no es legible o no existe, usa "N/A" para strings o 0 para números.
-            
-            Estructura JSON requerida:
-            {
-              "fecha": "DD/MM/AAAA",
-              "proveedor": "string",
-              "numero_factura": "string",
-              "subtotal": number,
-              "iva": number,
-              "total": number,
-              "total_sin_iva": number,
-              "productos": [
-                {
-                  "nombre": "string",
-                  "cantidad": number,
-                  "valor_unitario": number,
-                  "total_sin_iva": number
-                }
-              ]
-            }
-            
-            IMPORTANTE:
-            - Asegúrate de que los valores numéricos sean números reales (sin comillas).
-            - Si no puedes calcular un valor, usa 0.
-          `;
-
-          const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite-preview',
-            contents: {
-              parts: [
-                { inlineData: { data: base64Data, mimeType: file.type } },
-                { text: prompt },
-              ],
-            },
+          const response = await fetch('/api/process-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base64Data, mimeType: file.type }),
           });
-
-          if (!response.text) throw new Error('No se pudo extraer información.');
           
-          const jsonResult = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
-          const parsedData = JSON.parse(jsonResult);
+          if (!response.ok) throw new Error('Error al procesar la factura.');
+          
+          const parsedData = await response.json();
           
           if (!user) {
             resolve({ id: Date.now().toString(), ...parsedData, userId: 'anonymous' } as Invoice);
