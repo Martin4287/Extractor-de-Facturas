@@ -4,11 +4,12 @@
  */
 
 import * as React from 'react';
-import { Upload, FileText, Loader2, LayoutDashboard } from 'lucide-react';
+import { Upload, FileText, Loader2, LayoutDashboard, Download } from 'lucide-react';
 import { auth, db } from './firebase';
 import { collection, addDoc, deleteDoc, doc, query, where, getDocs } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { GoogleGenAI } from "@google/genai";
+import * as XLSX from 'xlsx';
 
 interface Product {
   nombre: string;
@@ -31,13 +32,36 @@ interface Invoice {
   productos: Product[];
 }
 
+const exportToExcel = (invoices: Invoice[]) => {
+  const data = invoices.flatMap(inv => 
+    inv.productos.map(prod => ({
+      'Fecha': inv.fecha,
+      'Proveedor': inv.proveedor,
+      'Nº Factura': inv.numero_factura,
+      'Subtotal (Factura)': inv.subtotal,
+      'IVA (Factura)': inv.iva,
+      'Total (Factura)': inv.total,
+      'Producto': prod.nombre,
+      'Cantidad': prod.cantidad,
+      'Precio Unidad': prod.valor_unitario,
+      'Total sin IVA (Producto)': prod.total_sin_iva
+    }))
+  );
+
+  const worksheet = XLSX.utils.json_to_sheet(data);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Facturas");
+  XLSX.writeFile(workbook, "Facturas.xlsx");
+};
+
 interface DashboardProps {
   invoices: Invoice[];
   loading: boolean;
   onDelete: (id: string) => void;
+  onExport: () => void;
 }
 
-function Dashboard({ invoices, loading, onDelete }: DashboardProps) {
+function Dashboard({ invoices, loading, onDelete, onExport }: DashboardProps) {
   const [selectedInvoice, setSelectedInvoice] = React.useState<Invoice | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{ x: number, y: number, invoice: Invoice } | null>(null);
 
@@ -51,6 +75,12 @@ function Dashboard({ invoices, loading, onDelete }: DashboardProps) {
 
   return (
     <div className="p-4">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold">Resumen de Facturas</h2>
+        <button onClick={onExport} className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+          <Download size={20} /> Exportar a Excel
+        </button>
+      </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
         {invoices.map((inv) => (
           <div 
@@ -189,15 +219,50 @@ export default function App() {
         try {
           const base64Data = (reader.result as string).split(',')[1];
           
-          const response = await fetch('/api/process-invoice', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base64Data, mimeType: file.type }),
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const prompt = `
+            Analiza la siguiente imagen o PDF de una factura/ticket y extrae la información clave.
+            Devuelve ÚNICAMENTE un objeto JSON plano. NO incluyas explicaciones, ni texto adicional fuera del JSON.
+            Si un dato no es legible o no existe, usa "N/A" para strings o 0 para números.
+            
+            Estructura JSON requerida:
+            {
+              "fecha": "DD/MM/AAAA",
+              "proveedor": "string",
+              "numero_factura": "string",
+              "subtotal": number,
+              "iva": number,
+              "total": number,
+              "total_sin_iva": number,
+              "productos": [
+                {
+                  "nombre": "string",
+                  "cantidad": number,
+                  "valor_unitario": number,
+                  "total_sin_iva": number
+                }
+              ]
+            }
+            
+            IMPORTANTE:
+            - Asegúrate de que los valores numéricos sean números reales (sin comillas).
+            - Si no puedes calcular un valor, usa 0.
+          `;
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: {
+              parts: [
+                { inlineData: { data: base64Data, mimeType: file.type } },
+                { text: prompt },
+              ],
+            },
           });
+
+          if (!response.text) throw new Error('No se pudo extraer información.');
           
-          if (!response.ok) throw new Error('Error al procesar la factura.');
-          
-          const parsedData = await response.json();
+          const jsonResult = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsedData = JSON.parse(jsonResult);
           
           if (!user) {
             resolve({ id: Date.now().toString(), ...parsedData, userId: 'anonymous' } as Invoice);
@@ -289,6 +354,9 @@ export default function App() {
                   <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
                     <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Facturas Procesadas</h3>
                     <div className="flex gap-2">
+                      <button onClick={() => exportToExcel(processedInvoices)} className="flex items-center gap-2 bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700 text-sm">
+                        <Download size={16} /> Exportar
+                      </button>
                       <input 
                         type="text" 
                         placeholder="Filtrar proveedor..." 
@@ -424,6 +492,7 @@ export default function App() {
                   await deleteDoc(doc(db, 'invoices', id));
                   setProcessedInvoices(prev => prev.filter(inv => inv.id !== id));
                 }}
+                onExport={() => exportToExcel(processedInvoices)}
               />
             </>
           )}
