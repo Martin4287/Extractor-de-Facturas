@@ -66,24 +66,21 @@ app.post("/api/process-invoice", async (req, res) => {
   }
 });
 
-// Vite middleware setup
-async function setupVite() {
-  if (process.env.NODE_ENV !== "production") {
+// Production static file serving or Development Vite middleware
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(__dirname));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+  });
+} else {
+  (async () => {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = process.env.NODE_ENV === 'production' ? __dirname : path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  })();
 }
-
-setupVite();
 
 // Start server
 const PORT = 3000;
