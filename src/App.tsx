@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import * as React from 'react';
 import { Upload, FileText, Loader2, LayoutDashboard } from 'lucide-react';
 import { auth, db } from './firebase';
-import { collection, addDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, deleteDoc, doc, query, where, getDocs } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+import { GoogleGenAI } from "@google/genai";
 
 interface Product {
   nombre: string;
@@ -37,10 +38,10 @@ interface DashboardProps {
 }
 
 function Dashboard({ invoices, loading, onDelete }: DashboardProps) {
-  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, invoice: Invoice } | null>(null);
+  const [selectedInvoice, setSelectedInvoice] = React.useState<Invoice | null>(null);
+  const [contextMenu, setContextMenu] = React.useState<{ x: number, y: number, invoice: Invoice } | null>(null);
 
-  useEffect(() => {
+  React.useEffect(() => {
     const handleClick = () => setContextMenu(null);
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
@@ -128,38 +129,39 @@ function Dashboard({ invoices, loading, onDelete }: DashboardProps) {
 }
 
 export default function App() {
-  const [user, setUser] = useState(auth.currentUser);
-  const [view, setView] = useState<'extractor' | 'dashboard'>('extractor');
+  const [user, setUser] = React.useState(auth.currentUser);
+  const [view, setView] = React.useState<'extractor' | 'dashboard'>('extractor');
 
-  useEffect(() => {
+  React.useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
     });
     return () => unsubscribe();
   }, []);
-  const [files, setFiles] = useState<File[]>([]);
-  const [processedInvoices, setProcessedInvoices] = useState<Invoice[]>([]);
-  const [filterProveedor, setFilterProveedor] = useState('');
-  const [filterFecha, setFilterFecha] = useState('');
-  const [selectedInvoiceDetails, setSelectedInvoiceDetails] = useState<Invoice | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, invoice: Invoice } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [startTime, setStartTime] = useState<number | null>(null);
-  const [elapsed, setElapsed] = useState(0);
+  const [files, setFiles] = React.useState<File[]>([]);
+  const [processedInvoices, setProcessedInvoices] = React.useState<Invoice[]>([]);
+  const [filterProveedor, setFilterProveedor] = React.useState('');
+  const [filterFecha, setFilterFecha] = React.useState('');
+  const [selectedInvoiceDetails, setSelectedInvoiceDetails] = React.useState<Invoice | null>(null);
+  const [contextMenu, setContextMenu] = React.useState<{ x: number, y: number, invoice: Invoice } | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [startTime, setStartTime] = React.useState<number | null>(null);
+  const [elapsed, setElapsed] = React.useState(0);
 
   const MAX_FILES = 5;
 
-  useEffect(() => {
-    if (view === 'extractor') {
-      fetch(`${process.env.APP_URL}/api/invoices`)
-        .then(res => res.json())
-        .then(data => setProcessedInvoices(data))
-        .catch(err => console.error('Error fetching invoices:', err));
+  React.useEffect(() => {
+    if (view === 'extractor' && user) {
+      const q = query(collection(db, 'invoices'), where('userId', '==', user.uid));
+      getDocs(q).then((snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Invoice));
+        setProcessedInvoices(data);
+      }).catch(err => console.error('Error fetching invoices:', err));
     }
-  }, [view]);
+  }, [view, user]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     let interval: NodeJS.Timeout;
     if (loading && startTime) {
       interval = setInterval(() => {
@@ -187,15 +189,50 @@ export default function App() {
         try {
           const base64Data = (reader.result as string).split(',')[1];
           
-          const response = await fetch('/api/process-invoice', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base64Data, mimeType: file.type }),
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const prompt = `
+            Analiza la siguiente imagen o PDF de una factura/ticket y extrae la información clave.
+            Devuelve ÚNICAMENTE un objeto JSON plano. NO incluyas explicaciones, ni texto adicional fuera del JSON.
+            Si un dato no es legible o no existe, usa "N/A" para strings o 0 para números.
+            
+            Estructura JSON requerida:
+            {
+              "fecha": "DD/MM/AAAA",
+              "proveedor": "string",
+              "numero_factura": "string",
+              "subtotal": number,
+              "iva": number,
+              "total": number,
+              "total_sin_iva": number,
+              "productos": [
+                {
+                  "nombre": "string",
+                  "cantidad": number,
+                  "valor_unitario": number,
+                  "total_sin_iva": number
+                }
+              ]
+            }
+            
+            IMPORTANTE:
+            - Asegúrate de que los valores numéricos sean números reales (sin comillas).
+            - Si no puedes calcular un valor, usa 0.
+          `;
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: {
+              parts: [
+                { inlineData: { data: base64Data, mimeType: file.type } },
+                { text: prompt },
+              ],
+            },
           });
+
+          if (!response.text) throw new Error('No se pudo extraer información.');
           
-          if (!response.ok) throw new Error('Error al procesar la factura.');
-          
-          const parsedData = await response.json();
+          const jsonResult = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsedData = JSON.parse(jsonResult);
           
           if (!user) {
             resolve({ id: Date.now().toString(), ...parsedData, userId: 'anonymous' } as Invoice);
@@ -305,17 +342,17 @@ export default function App() {
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm text-left">
-                      <thead className="text-xs text-gray-500 uppercase bg-gray-100">
+                      <thead className="text-xs text-gray-800 uppercase bg-gray-100">
                         <tr>
-                          <th className="px-4 py-3 font-medium">Fecha</th>
-                          <th className="px-4 py-3 font-medium">Proveedor</th>
-                          <th className="px-4 py-3 font-medium">Nº Factura</th>
-                          <th className="px-4 py-3 font-medium text-right">Subtotal</th>
-                          <th className="px-4 py-3 font-medium text-right">IVA</th>
-                          <th className="px-4 py-3 font-medium text-right">Total</th>
+                          <th className="px-4 py-3 font-bold">Fecha</th>
+                          <th className="px-4 py-3 font-bold">Proveedor</th>
+                          <th className="px-4 py-3 font-bold">Nº Factura</th>
+                          <th className="px-4 py-3 font-bold text-right">Subtotal</th>
+                          <th className="px-4 py-3 font-bold text-right">IVA</th>
+                          <th className="px-4 py-3 font-bold text-right">Total</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-200 bg-white">
+                      <tbody className="divide-y divide-gray-200 bg-white font-mono text-sm">
                         {processedInvoices
                           .filter(inv => 
                             (filterProveedor === '' || inv.proveedor?.toLowerCase().includes(filterProveedor.toLowerCase())) &&
@@ -331,22 +368,22 @@ export default function App() {
                               setContextMenu({ x: e.clientX, y: e.clientY, invoice: inv });
                             }}
                           >
-                            <td className="px-4 py-3 font-mono text-gray-900">{inv.fecha || 'N/A'}</td>
-                            <td className="px-4 py-3 font-medium text-gray-900">{inv.proveedor || 'N/A'}</td>
-                            <td className="px-4 py-3 font-mono text-gray-600">{inv.numero_factura || 'N/A'}</td>
-                            <td className="px-4 py-3 text-right font-mono text-gray-900">
+                            <td className="px-4 py-3 text-gray-900">{inv.fecha || 'N/A'}</td>
+                            <td className="px-4 py-3 text-gray-900">{inv.proveedor || 'N/A'}</td>
+                            <td className="px-4 py-3 text-gray-600">{inv.numero_factura || 'N/A'}</td>
+                            <td className="px-4 py-3 text-right text-gray-900">
                               {(() => {
                                 const val = parseFloat(inv.subtotal as any);
                                 return !isNaN(val) ? val.toFixed(2) : 'N/A';
                               })()}
                             </td>
-                            <td className="px-4 py-3 text-right font-mono text-gray-900">
+                            <td className="px-4 py-3 text-right text-gray-900">
                               {(() => {
                                 const val = parseFloat(inv.iva as any);
                                 return !isNaN(val) ? val.toFixed(2) : 'N/A';
                               })()}
                             </td>
-                            <td className="px-4 py-3 text-right font-mono font-bold text-blue-700">
+                            <td className="px-4 py-3 text-right font-bold text-blue-700">
                               {(() => {
                                 const val = parseFloat(inv.total as any);
                                 return !isNaN(val) ? val.toFixed(2) : 'N/A';
