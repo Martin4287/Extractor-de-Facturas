@@ -68,9 +68,9 @@ app.post("/api/process-invoice", async (req, res) => {
 
 // Production static file serving
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'dist')));
+  app.use(express.static(__dirname));
   app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
   });
 } else {
   // Development Vite middleware
