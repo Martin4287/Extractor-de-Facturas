@@ -62,7 +62,10 @@ app.post("/api/process-invoice", async (req, res) => {
     res.json(JSON.parse(jsonResult));
   } catch (error) {
     console.error('Error processing invoice:', error);
-    res.status(500).json({ error: 'Error al procesar la factura.' });
+    res.status(500).json({ 
+      error: 'Error al procesar la factura.',
+      details: error instanceof Error ? error.message : String(error)
+    });
   }
 });
 
