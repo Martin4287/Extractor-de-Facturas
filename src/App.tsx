@@ -225,7 +225,10 @@ export default function App() {
             body: JSON.stringify({ base64Data, mimeType: file.type })
           });
 
-          if (!response.ok) throw new Error('Error al procesar factura en el servidor.');
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.details || 'Error al procesar factura en el servidor.');
+          }
           
           const parsedData = await response.json();
           
