@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI } from "@google/genai";
@@ -12,6 +11,9 @@ app.use(express.json({ limit: '10mb' }));
 // API routes
 app.post("/api/process-invoice", async (req, res) => {
   try {
+    if (!req.body || !req.body.base64Data) {
+      throw new Error('Datos de factura no recibidos.');
+    }
     const { base64Data, mimeType } = req.body;
     if (!process.env.GEMINI_API_KEY) {
       throw new Error('GEMINI_API_KEY no está configurada en el servidor.');
@@ -56,7 +58,7 @@ app.post("/api/process-invoice", async (req, res) => {
       },
     });
 
-    if (!response.text) throw new Error('No se pudo extraer información.');
+    if (!response.text) throw new Error('La IA no devolvió información.');
 
     const jsonResult = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
     res.json(JSON.parse(jsonResult));
@@ -77,7 +79,8 @@ if (process.env.NODE_ENV === 'production') {
   });
 } else {
   // Development Vite middleware
-  import('vite').then(({ createServer }) => {
+  const viteModule = 'vite';
+  import(viteModule).then(({ createServer }) => {
     createServer({
       server: { middlewareMode: true },
       appType: "spa",
